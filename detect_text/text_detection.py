@@ -24,7 +24,12 @@ def save_detection_json(file_path, texts, img_shape):
 def visualize_texts(org_img, texts, shown_resize_height=None, show=False, write_path=None):
     img = org_img.copy()
     for text in texts:
-        text.visualize_element(img, line=2)
+        if isinstance(text, dict) and "position" in text:
+            x1, y1, x2, y2 = text["position"]
+            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cv2.putText(img, text.get("text", ""), (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        else:
+            text.visualize_element(img, line=2)
 
     img_resize = img
     if shown_resize_height is not None:
@@ -39,9 +44,6 @@ def visualize_texts(org_img, texts, shown_resize_height=None, show=False, write_
 
 
 def text_sentences_recognition(texts):
-    '''
-    Merge separate words detected by Google ocr into a sentence
-    '''
     changed = True
     while changed:
         changed = False
@@ -64,9 +66,6 @@ def text_sentences_recognition(texts):
 
 
 def merge_intersected_texts(texts):
-    '''
-    Merge intersected texts (sentences or words)
-    '''
     changed = True
     while changed:
         changed = False
@@ -129,36 +128,39 @@ def text_filter_noise(texts):
 
 def text_detection(input_file='../data/input/30800.jpg', output_file='../data/output', show=False, method='google', paddle_model=None):
     '''
-    :param method: google or paddle
-    :param paddle_model: the preload paddle model for paddle ocr
+    :param method: google, paddle ou tesseract (patch perso)
     '''
-    start = time.clock()
+    start = time.perf_counter()
     name = input_file.split('/')[-1][:-4]
     ocr_root = pjoin(output_file, 'ocr')
+    os.makedirs(ocr_root, exist_ok=True)
     img = cv2.imread(input_file)
 
     if method == 'google':
-        print('*** Detect Text through Google OCR ***')
         ocr_result = ocr.ocr_detection_google(input_file)
-        texts = text_cvt_orc_format(ocr_result)
-        texts = merge_intersected_texts(texts)
-        texts = text_filter_noise(texts)
-        texts = text_sentences_recognition(texts)
     elif method == 'paddle':
-        # The import of the paddle ocr can be separate to the beginning of the program if you decide to use this method
-        from paddleocr import PaddleOCR
-        print('*** Detect Text through Paddle OCR ***')
-        if paddle_model is None:
-            paddle_model = PaddleOCR(use_angle_cls=True, lang="ch")
-        result = paddle_model.ocr(input_file, cls=True)
-        texts = text_cvt_orc_format_paddle(result)
+        ocr_result = ocr.ocr_detection_paddle(input_file)
+    elif method == 'tesseract':
+        ocr_result = ocr.ocr_detection_tesseract(input_file)
     else:
-        raise ValueError('Method has to be "google" or "paddle"')
+        raise ValueError('Method has to be "google", "paddle" or "tesseract"')
+
+    # Conversion vers objets Text
+    if method == 'tesseract':
+        texts = []
+        for i, entry in enumerate(ocr_result):
+            location = {
+                'left': entry['position'][0],
+                'top': entry['position'][1],
+                'right': entry['position'][2],
+                'bottom': entry['position'][3]
+            }
+            texts.append(Text(i, entry['text'], location))
+    else:
+        texts = text_cvt_orc_format(ocr_result)
 
     visualize_texts(img, texts, shown_resize_height=800, show=show, write_path=pjoin(ocr_root, name+'.png'))
     save_detection_json(pjoin(ocr_root, name+'.json'), texts, img.shape)
-    print("[Text Detection Completed in %.3f s] Input: %s Output: %s" % (time.clock() - start, input_file, pjoin(ocr_root, name+'.json')))
 
-
-# text_detection()
-
+    duration = time.perf_counter() - start
+    print(f"[Text Detection Completed in {duration:.3f} s] Input: {input_file} Output: {pjoin(ocr_root, name+'.json')}")
